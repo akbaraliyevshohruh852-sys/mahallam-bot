@@ -1,3 +1,6 @@
 aiogram==2.25.1
 pandas
-aiohttp
+openpyxl
+six
+groq
+aiohttp==3.9.5
