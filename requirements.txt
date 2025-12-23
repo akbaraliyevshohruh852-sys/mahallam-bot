@@ -3,4 +3,4 @@ pandas
 openpyxl
 six
 groq
-aiohttp==3.9.5
+aiohttp==3.8.6
