@@ -4,4 +4,4 @@ openpyxl
 six
 groq
 mysql-connector-python
-aiohttp
+aiohttp==3.8.6
