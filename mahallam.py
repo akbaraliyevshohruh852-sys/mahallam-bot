@@ -1,129 +1,176 @@
 import logging
-import asyncio
-from io import BytesIO
 import pandas as pd
+import os
 import aiohttp
+import asyncio
 from aiogram import Bot, Dispatcher, types, executor
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher import FSMContext
-from aiogram.dispatcher.filters import Text
 from aiogram.dispatcher.filters.state import State, StatesGroup
+from datetime import datetime
 
 # ========================
-# ⚙️ CONFIGURATION
+# ⚙️ KONFIGURATSIYA
 # ========================
-# Render-da ishlashi uchun Portni 10000 qilib belgilaymiz
-PORT = 10000 
 BOT_TOKEN = "8535307553:AAGnsB0qowUeUaGuVvSBWiOwPEuGY2132rg"
 ADMIN_ID = 5200168486
-GROQ_API_KEY = "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"
+GROQ_API_KEY = "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"
+DB_FILE = "mahallam_bazasi.csv"
+NEWS_FILE = "yangiliklar.txt"
 
 logging.basicConfig(level=logging.INFO)
-
-# Ma'lumotlarni vaqtincha saqlash uchun lug'atlar (Baza o'rniga)
-users_db = {}
-problems_db = []
-market_items = []
+bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
+dp = Dispatcher(bot, storage=MemoryStorage())
 
 # ========================
-# 🤖 AI HELPER
-# ========================
-async def analyze_with_ai(prompt):
-    url = "https://api.groq.com/openai/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "model": "llama3-8b-8192",
-        "messages": [
-            {"role": "system", "content": "Siz Yangi Obod MFY botining aqlli yordamchisisiz. Mahalladoshlarga xushmuomala javob bering."},
-            {"role": "user", "content": prompt}
-        ]
-    }
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, headers=headers, json=payload) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    return data['choices'][0]['message']['content']
-                return "Kechirasiz, AI hozirda band."
-    except Exception:
-        return "AI xizmatida xatolik yuz berdi."
-
-# ========================
-# 📝 STATES
+# 📝 HOLATLAR (FSM)
 # ========================
 class Registration(StatesGroup):
+    gender = State()
     full_name = State()
+    street = State()
     phone = State()
 
 class ProblemReport(StatesGroup):
-    desc = State()
+    target = State()
+    content = State()
 
-class MarketPost(StatesGroup):
-    title = State()
-    price = State()
-    desc = State()
+class AdminStates(StatesGroup):
+    broadcast = State()
+    add_news = State()
+
+class ChatAI(StatesGroup):
+    waiting_message = State()
 
 # ========================
-# ⌨️ KEYBOARDS
+# 🛠 BAZA FUNKSIYALARI
 # ========================
-def get_main_kb(user_id):
+def save_user(data):
+    file_exists = os.path.isfile(DB_FILE)
+    df = pd.DataFrame([data])
+    df.to_csv(DB_FILE, mode='a', index=False, header=not file_exists, encoding='utf-8-sig')
+
+def get_all_user_ids():
+    if os.path.exists(DB_FILE):
+        df = pd.read_csv(DB_FILE)
+        return df['ID'].tolist()
+    return []
+
+# ========================
+# 🤖 AI (GROQ)
+# ========================
+async def get_ai_response(user_text):
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {GROQ_API_KEY}"}
+    payload = {
+        "model": "llama3-8b-8192",
+        "messages": [{"role": "system", "content": "Siz mahalla yordamchisisiz."}, {"role": "user", "content": user_text}]
+    }
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload, headers=headers) as resp:
+                data = await resp.json()
+                return data['choices'][0]['message']['content']
+    except: return "🤖 AI band."
+
+# ========================
+# ⌨️ TUGMALAR
+# ========================
+def main_menu():
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    kb.add("🆘 SOS", "📝 Muammo yo'llash")
-    kb.add("🏗 Mahalla Bozori", "🤖 AI Yordamchi")
-    if user_id == ADMIN_ID:
-        kb.add("⚙️ Admin Panel")
+    kb.add("🤖 AI Yordamchi", "📢 Yangiliklar")
+    kb.add("📝 Murojaat", "👨‍👩‍👧‍👦 Yettilik")
+    kb.add("👤 Profilim", "🆘 SOS")
+    return kb
+
+def admin_menu():
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    kb.add("📊 Excel Baza", "📢 E'lon Tarqatish")
+    kb.add("✍️ Yangilik Qo'shish", "📈 Statistika")
+    kb.add("⬅️ Chiqish")
     return kb
 
 # ========================
-# 🚀 HANDLERS
+# 🚀 HANDLERLAR
 # ========================
-bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
-storage = MemoryStorage()
-dp = Dispatcher(bot, storage=storage)
 
 @dp.message_handler(commands=['start'])
 async def cmd_start(message: types.Message):
-    user_id = message.from_user.id
-    if user_id in users_db:
-        await message.answer(f"Xush kelibsiz, <b>{users_db[user_id]['name']}</b>!", reply_markup=get_main_kb(user_id))
-    else:
-        await message.answer("Salom! Yangi Obod MFY botiga xush kelibsiz.\n\n👤 <b>Ism-sharifingizni kiriting:</b>")
-        await Registration.full_name.set()
+    await message.answer("<b>Yangi Obod MFY</b> botiga xush kelibsiz!\nRo'yxatdan o'ting. Jinsingiz:")
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True).add("Erkak", "Ayol")
+    await Registration.gender.set()
+    await message.answer("Tanlang:", reply_markup=kb)
+
+@dp.message_handler(state=Registration.gender)
+async def reg_g(message: types.Message, state: FSMContext):
+    await state.update_data(gender=message.text)
+    await message.answer("Ism-familiyangizni kiriting:", reply_markup=types.ReplyKeyboardRemove())
+    await Registration.next()
 
 @dp.message_handler(state=Registration.full_name)
-async def reg_name(message: types.Message, state: FSMContext):
+async def reg_n(message: types.Message, state: FSMContext):
     await state.update_data(name=message.text)
-    await message.answer("📞 Telefon raqamingizni kiriting:")
-    await Registration.phone.set()
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True).add("Navro'z", "Mustaqillik", "Bog'zor", "Guliston")
+    await message.answer("Ko'changizni tanlang:", reply_markup=kb)
+    await Registration.next()
 
-@dp.message_handler(state=Registration.phone)
-async def reg_done(message: types.Message, state: FSMContext):
+@dp.message_handler(state=Registration.street)
+async def reg_s(message: types.Message, state: FSMContext):
+    await state.update_data(street=message.text)
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True).add(types.KeyboardButton("📞 Kontakt", request_contact=True))
+    await message.answer("Telefon raqamingizni yuboring:", reply_markup=kb)
+    await Registration.next()
+
+@dp.message_handler(state=Registration.phone, content_types=['contact'])
+async def reg_p(message: types.Message, state: FSMContext):
     data = await state.get_data()
-    users_db[message.from_user.id] = {'name': data['name'], 'phone': message.text}
-    await message.answer("🎉 Ro'yxatdan o'tdingiz!", reply_markup=get_main_kb(message.from_user.id))
+    user_info = {"ID": message.from_user.id, "Ism": data['name'], "Jinsi": data['gender'], "Ko'cha": data['street'], "Tel": message.contact.phone_number, "Sana": datetime.now()}
+    save_user(user_info)
+    await message.answer("🎉 Registratsiya tugadi!", reply_markup=main_menu())
     await state.finish()
 
-@dp.message_handler(Text(equals="🤖 AI Yordamchi"))
-async def ai_menu(message: types.Message):
-    await message.answer("🤖 Menga savol bering (masalan: 'Mahalla nima?')")
+# --- ADMIN FUNKSIYALARI ---
+@dp.message_handler(commands=['admin'], user_id=ADMIN_ID)
+async def admin_start(message: types.Message):
+    await message.answer("🛠 Admin Panel:", reply_markup=admin_menu())
 
-@dp.message_handler(lambda m: m.text and not m.text.startswith('/'))
-async def ai_query_handler(message: types.Message):
-    if message.text in ["🆘 SOS", "📝 Muammo yo'llash", "🏗 Mahalla Bozori", "🤖 AI Yordamchi", "⚙️ Admin Panel"]:
-        return
-    wait = await message.answer("🔍 O'ylayapman...")
-    response = await analyze_with_ai(message.text)
-    await wait.edit_text(f"🤖 <b>AI javobi:</b>\n\n{response}")
+@dp.message_handler(lambda m: m.text == "📊 Excel Baza", user_id=ADMIN_ID)
+async def adm_excel(message: types.Message):
+    if os.path.exists(DB_FILE):
+        pd.read_csv(DB_FILE).to_excel("Mahalla.xlsx", index=False)
+        with open("Mahalla.xlsx", "rb") as f: await message.answer_document(f)
+        os.remove("Mahalla.xlsx")
 
-# SOS Handler
-@dp.message_handler(Text(equals="🆘 SOS"))
-async def sos_call(message: types.Message):
-    await message.answer("🚀 SOS xabari yuborildi! (Vaqtincha demo rejimida)")
-    await bot.send_message(ADMIN_ID, f"‼️ <b>SHOSHILINCH SOS!</b>\n👤 Kimdan: {message.from_user.full_name}")
+@dp.message_handler(lambda m: m.text == "📈 Statistika", user_id=ADMIN_ID)
+async def adm_stats(message: types.Message):
+    if os.path.exists(DB_FILE):
+        df = pd.read_csv(DB_FILE)
+        stats = f"👥 Jami: {len(df)}\n👨 Erkak: {len(df[df['Jinsi']=='Erkak'])}\n👩 Ayol: {len(df[df['Jinsi']=='Ayol'])}"
+        await message.answer(stats)
+
+@dp.message_handler(lambda m: m.text == "📢 E'lon Tarqatish", user_id=ADMIN_ID)
+async def br_start(message: types.Message):
+    await message.answer("Barcha foydalanuvchilarga yuboriladigan xabarni yozing:")
+    await AdminStates.broadcast.set()
+
+@dp.message_handler(state=AdminStates.broadcast, user_id=ADMIN_ID)
+async def br_send(message: types.Message, state: FSMContext):
+    users = get_all_user_ids()
+    count = 0
+    for uid in users:
+        try:
+            await bot.send_message(uid, f"📢 <b>MAHALLA E'LONI:</b>\n\n{message.text}")
+            count += 1
+            await asyncio.sleep(0.05)
+        except: pass
+    await message.answer(f"✅ {count} kishiga yuborildi.", reply_markup=admin_menu())
+    await state.finish()
+
+# --- SOS ---
+@dp.message_handler(lambda m: m.text == "🆘 SOS")
+async def sos_handler(message: types.Message):
+    await bot.send_message(ADMIN_ID, f"🚨 <b>SOS XABARI!</b>\nFoydalanuvchi: {message.from_user.full_name}\nID: {message.from_user.id} yordam so'rayapti!")
+    await message.answer("🆘 Xabar mas'ul xodimlarga yuborildi. Tez orada bog'lanishadi.")
 
 if __name__ == '__main__':
-    # Render uchun polling ishlatamiz (webhook-siz osonroq)
     executor.start_polling(dp, skip_updates=True)
