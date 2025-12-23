@@ -1,0 +1,7 @@
+aiogram==2.25.1
+pandas
+openpyxl
+six
+groq
+mysql-connector-python
+aiohttp
